@@ -25,7 +25,7 @@ def enabled(flag=None):
 def client():
     from openai import OpenAI
     url, env, _ = NEBIUS
-    return OpenAI(base_url=url, api_key=os.environ[env], timeout=60)
+    return OpenAI(base_url=url, api_key=os.environ[env], timeout=180)
 
 
 def parse(text):
@@ -56,14 +56,16 @@ def review_rewrite(before, after, strategy="", ai=None):
     try:
         ai = ai or client()
         r = ai.chat.completions.create(
-            model=NEBIUS[2], temperature=0, max_tokens=600,
+            model=NEBIUS[2], temperature=0, max_tokens=4000,
             messages=[{"role": "system", "content": PROMPT},
                       {"role": "user", "content": f"Strategy: {strategy}\nBEFORE:\n{before}\nAFTER:\n{after}"}])
         parsed = parse(r.choices[0].message.content)
         if parsed is None:
-            rec.update(status="error", error="malformed JSON from reviewer model")
+            fr = getattr(r.choices[0], "finish_reason", None)
+            rec.update(status="error", error="truncated reply (hit max_tokens)" if fr == "length" else "malformed JSON from reviewer model")
         else:
             rec.update(status="ok", **parsed)
     except Exception as e:  # network/auth/rate-limit: advisory step, never crash the run
         rec.update(status="error", error=type(e).__name__)
+        log.warning("nemotron review failed: %s", type(e).__name__)
     return rec
