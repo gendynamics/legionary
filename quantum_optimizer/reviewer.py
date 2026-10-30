@@ -1,14 +1,33 @@
-"""Reviewer: picks the smallest candidate that passes check_equiv."""
+"""Reviewer: picks the smallest candidate that passes check_equiv.
+
+Optional: an independent Nemotron review (advisory) runs on each rewrite BEFORE check_equiv.
+check_equiv remains the sole authority for acceptance.
+"""
+import logging
 from .tools import check_equiv, count_gates
 
+log = logging.getLogger("legionary.reviewer")
 
-def review(before, candidates):
+
+def review(before, candidates, second_opinion=None, records=None):
+    """second_opinion: callable(before, after, strategy) -> dict, or None to skip.
+    records: optional list; one record per candidate is appended with both results."""
     base = count_gates(before)
     best = {"strategy": "original", "qasm": before, "equiv": True, **base}
     for c in candidates:
         if "error" in c:
             continue
-        if not check_equiv(before, c["qasm"])["ok"]:
+        rec = {"strategy": c["strategy"]}
+        if second_opinion is not None:
+            rec["nemotron"] = second_opinion(before, c["qasm"], c["strategy"])
+        ok = check_equiv(before, c["qasm"])["ok"]
+        rec["equiv"] = ok
+        if records is not None:
+            records.append(rec)
+        if "nemotron" in rec:
+            n = rec["nemotron"]
+            log.info("rewrite %s: nemotron=%s/%s equiv=%s", c["strategy"], n.get("status"), n.get("verdict"), ok)
+        if not ok:
             continue
         m = count_gates(c["qasm"])
         if (m["total"], m["cx"], m["depth"]) < (best["total"], best["cx"], best["depth"]):

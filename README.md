@@ -48,3 +48,17 @@ orchestrator), `AGENTS.md`, `MUSE.md`, `.agents/skills/`, `tests/`.
 ## License
 
 MIT © 2026 GenStro Intelligence, LLC
+
+## Nemotron second-opinion reviewer (optional, Nebius)
+
+Before each candidate rewrite goes through the exact `check_equiv` test, Legionary can send it to
+NVIDIA **Nemotron 3 Super 120B** (`nvidia/nemotron-3-super-120b-a12b`) on Nebius Token Factory
+(`https://api.tokenfactory.nebius.com/v1`, OpenAI-compatible chat completions) for an independent
+review. It returns `verdict` (approve/reject/uncertain), `reasons` and `risk_notes`, logged next to
+the equivalence result. The review is **advisory**: `check_equiv` still decides what is accepted,
+and Muse Spark planning is unchanged.
+
+- Enable: `export NEBIUS_API_KEY=...` (on by default when set; if unset each review is recorded as `skipped`).
+- Disable: `--no-nemotron-review` or `LEGIONARY_NEMOTRON_REVIEW=0`.
+- Errors or malformed replies are recorded as `error`; the run never crashes.
+- Cost (estimate): ~1-2K tokens per review at $0.30/1M in, i.e. well under a cent per review.
