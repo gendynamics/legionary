@@ -86,6 +86,9 @@ def pick_provider():
     return select_backends("auto")[0]
 
 
+from . import events
+
+
 class Session:
     """Server-side circuit store + tool dispatch."""
     def __init__(self, original, max_calls=20):
@@ -111,11 +114,25 @@ class Session:
             out = {"error": f"tool-call cap ({self.max_calls}) reached; stop"}
             self.calls.append({"name": name, "args": args, "result": out, "capped": True})
             return out
+        a = args or {}
+        events.emit("tool_call", call=len(self.calls) + 1, max_calls=self.max_calls, tool=name,
+                    args=a, strategy=a.get("strategy"), circuit_id=a.get("circuit_id"))
         try:
-            out = self._run(name, args or {})
+            out = self._run(name, a)
         except Exception as e:
             out = {"error": f"{type(e).__name__}: {e}"}
         self.calls.append({"name": name, "args": args, "result": out})
+        if events.enabled() and isinstance(out, dict):
+            if name == "run_pass" and "circuit_id" in out:
+                events.emit_circuit("circuit_update", self.store[out["circuit_id"]]["qasm"],
+                                    circuit_id=out["circuit_id"], parent_id=a.get("circuit_id"),
+                                    chain=out.get("chain"))
+            elif name == "check_equivalence" and "equivalent" in out:
+                events.emit("equivalence", circuit_id=a.get("circuit_id"), ok=out["equivalent"],
+                            status="pass" if out["equivalent"] else "fail")
+            elif name == "finish" and "accepted" in out:
+                events.emit("equivalence", circuit_id=a.get("circuit_id"), ok=out["accepted"], finish=True,
+                            status="pass" if out["accepted"] else "fail")
         return out
 
     def _run(self, name, a):

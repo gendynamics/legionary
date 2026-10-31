@@ -8,6 +8,8 @@ from .report import table
 from .planner import plan
 from .rounds import optimize
 from . import agent_planner
+from . import events
+import subprocess, sys
 
 
 def pick(name, qasm, provider, ai=None, round_no=1, chain=None):
@@ -36,7 +38,22 @@ def main(argv=None):
     p.add_argument("--backend", choices=["auto", "meta", "fireworks", "nebius"], default="auto",
                    help="agent planner backend: meta muse-spark-1.3, fireworks/nebius muse-spark-open; auto = meta -> fireworks -> nebius (keyed only)")
     p.add_argument("--only", nargs="*", help="benchmark names to run (default: all)")
+    p.add_argument("--events", metavar="PATH|PORT|tcp:PORT",
+                   help="emit a live JSONL event stream: a file path, and/or a 127.0.0.1 TCP port (default off)")
+    p.add_argument("--viewer", action="store_true",
+                   help="open the live 3D viewer window (implies a TCP event stream on a free port)")
+    p.add_argument("--director-backend", choices=["auto", "meta", "fireworks", "nebius", "off"], default="auto",
+                   help="viewer theme: Muse Spark visual director backend, asked once at viewer startup (off = built-in)")
+    p.add_argument("--director-refresh", action="store_true", help="viewer: ignore the cached theme, ask the model again")
+    p.add_argument("--renderer", choices=["3d", "2d"], default="3d", help="viewer renderer (default 3d)")
+    p.add_argument("--angle", type=float, default=0.0, help="viewer: 3d camera orbit angle offset (degrees)")
+    p.add_argument("--render-scale", type=float, default=0.0, help="viewer: 3d internal resolution scale (0 = auto)")
+    p.add_argument("--stats", action="store_true", help="viewer: show fps / draw-call stats")
     a = p.parse_args(argv)
+    vargs = ["--director-backend", a.director_backend, "--renderer", a.renderer, "--angle", str(a.angle)]
+    vargs += (["--director-refresh"] if a.director_refresh else []) + (["--stats"] if a.stats else [])
+    vargs += ["--render-scale", str(a.render_scale)] if a.render_scale else []
+    viewer_proc = _setup_events(a.events, a.viewer, vargs)
     lg = logging.getLogger("legionary")
     if not lg.handlers:
         h = logging.StreamHandler(); h.setFormatter(logging.Formatter("%(name)s: %(message)s"))
@@ -49,8 +66,12 @@ def main(argv=None):
         if a.only and name not in a.only:
             continue
         recs = []
+        events.emit_circuit("run_start", qasm, circuit=name, planner=a.planner,
+                            max_calls=a.max_tool_calls if a.planner == "agent" else None,
+                            max_rounds=a.rounds if a.planner == "chain" else None)
         if a.planner == "agent":
             best = agent_planner.run_agent(name, qasm, max_calls=a.max_tool_calls, backend=a.backend)
+            _emit_result(name, best)
             lg.info("agent planner backend ran: %s (%s); tried %s", best["provider"], best["model"], best.get("backends_tried"))
             best["rounds_run"] = best["n_tool_calls"]
             rows.append((name, qasm, best))
@@ -63,6 +84,7 @@ def main(argv=None):
                 print(f"  API error: {e}")
             continue
         best = optimize(name, qasm, picker=picker, rounds=a.rounds, beam=a.beam, second_opinion=second, records=recs)
+        _emit_result(name, best)
         rows.append((name, qasm, best))
         reviews += [(name, r) for r in recs]
     print(table(rows))
@@ -70,6 +92,47 @@ def main(argv=None):
         print(review_table(reviews))
     for name, _, best in rows:
         print(f"chain {name}: {best['strategy']} ({best['rounds_run']} rounds)")
+    events.emit("run_end")
+    events.close()
+    if viewer_proc is not None:
+        print("viewer still open; close its window (or press Esc) when done")
+
+
+def _setup_events(spec, viewer, viewer_args=()):
+    path = port = None
+    for part in (spec or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith("tcp:"):
+            port = int(part[4:])
+        elif part.isdigit():
+            port = int(part)
+        else:
+            path = part
+    if viewer and port is None:
+        port = 0  # free port
+    if path is None and port is None:
+        return None
+    em = events.configure(path=path, port=port)
+    if port is not None:
+        print(f"event stream: tcp 127.0.0.1:{em.port}")
+    if path:
+        print(f"event stream: {path}")
+    if not viewer:
+        return None
+    import time
+    proc = subprocess.Popen([sys.executable, "-m", "quantum_optimizer.viewer", "--connect", f"127.0.0.1:{em.port}",
+                             *viewer_args])
+    time.sleep(1.5)  # let the window open; backlog replay covers anything missed
+    return proc
+
+
+def _emit_result(name, best):
+    events.emit_circuit("circuit_update", best["qasm"], circuit_id="final", chain=best.get("strategy"))
+    events.emit("result", circuit=name, source=best.get("source", "chain"), strategy=best.get("strategy"),
+                gates=best.get("gates", best.get("total")), depth=best.get("depth"), cx=best.get("cx"),
+                equiv=best.get("equiv"), tokens=best.get("usage"), cost_usd=best.get("cost_usd"))
 
 
 def review_table(reviews):

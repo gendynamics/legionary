@@ -12,6 +12,7 @@ import logging
 from .agents import STRATEGIES, swarm
 from .reviewer import review
 from .tools import count_gates
+from . import events
 
 log = logging.getLogger("legionary.rounds")
 
@@ -27,11 +28,15 @@ def optimize(name, original, picker=None, rounds=4, beam=3, second_opinion=None,
     start = {"strategy": "original", "qasm": original, "equiv": True, **count_gates(original), "chain": []}
     best, frontier, history = start, [start], []
     seen = {original}
+    step = 0
     for r in range(1, max(1, rounds) + 1):
         pool = []
         for node in frontier:
             names = (picker(name, node["qasm"], r, list(node["chain"])) if picker else None) or list(STRATEGIES)
             for c in swarm_fn(node["qasm"], names):
+                step += 1
+                events.emit("tool_call", call=step, round=r, max_rounds=rounds, tool="run_pass",
+                            strategy=c.get("strategy"), chain=" -> ".join(node["chain"] + [c.get("strategy") or "?"]))
                 recs = []
                 got = review_fn(node["qasm"], [c], second_opinion=second_opinion, records=recs,
                                 reference=original)
@@ -53,6 +58,10 @@ def optimize(name, original, picker=None, rounds=4, beam=3, second_opinion=None,
                      " -> ".join(best["chain"]) or "original")
             break
         best = top
+        events.emit_circuit("circuit_update", best["qasm"], circuit_id=f"round{r}", round=r,
+                            chain=" -> ".join(best["chain"]))
+        events.emit("equivalence", circuit_id=f"round{r}", ok=bool(best.get("equiv", True)),
+                    status="pass" if best.get("equiv", True) else "fail")
         frontier = pool[:max(1, beam)]
         log.info("%s round %d: gates=%d cx=%d depth=%d chain=%s", name, r, best["total"], best["cx"],
                  best["depth"], " -> ".join(best["chain"]))
