@@ -8,4 +8,5 @@
 4. Report gate count, depth and CX count before and after.
 
 Never pass `tool_choice` to `muse-spark-1.3` (only `"auto"` is accepted). Tests must not hit the network.
-Entry point: `python -m quantum_optimizer.orchestrator --provider meta|baseten|none`.
+Entry point: `python -m quantum_optimizer.orchestrator --provider meta|baseten|none [--rounds N] [--beam K] [--only NAME ...]`.
+Multi-round chaining lives in `quantum_optimizer/rounds.py`: each round's candidates are reviewed against the ORIGINAL circuit (`review(..., reference=original)`); the chain (e.g. `level1 -> level2`) is the reported strategy.

@@ -30,15 +30,23 @@ python -m quantum_optimizer.orchestrator --provider none   # deterministic swarm
 - `check_equiv(before, after, tol)` – unitary equivalence (keep circuits ≲12 qubits)
 - `simulate(qasm, shots, seed)` – Aer measurement counts
 
-## Measured results (`--provider none`)
+## Measured results (`--provider none`, default `--rounds 4 --beam 3`)
 
 Benchmarks lowered to the `rz, sx, x, cx` basis (QFT 4 qubits, Grover 3 qubits, Bernstein–Vazirani secret 1011):
 
 | circuit | strategy | gates before | gates after | depth before | depth after | cx before | cx after | equiv |
 |---|---|---|---|---|---|---|---|---|
 | qft4 | level2 | 48 | 42 | 28 | 25 | 18 | 18 | yes |
-| grover3 | combo | 157 | 85 | 99 | 55 | 24 | 24 | yes |
+| grover3 | level1 -> level2 | 157 | 81 | 99 | 55 | 24 | 24 | yes |
 | bv4 | level2 | 34 | 24 | 10 | 9 | 3 | 3 | yes |
+
+**Multi-round chaining.** The optimizer runs up to `--rounds N` (default 4) rounds. Each round applies
+strategies to the best `--beam K` circuits so far (default 3; 1 = greedy), and every candidate is
+equivalence-checked against the **original** circuit. It stops at a fixed point. With `--provider meta|baseten`,
+Muse picks and orders strategies each round, given the chain so far. Offline, it tries all of them.
+The discovered chain is shown in the `strategy` column. Greedy (`--beam 1`) stalls at grover3 `combo` = 85.
+The beam finds `level1 -> level2` = 81, below Qiskit's best single preset level (level 1: 93 gates, depth 55).
+qft4 and bv4 tie Qiskit levels 2/3. CX counts are unchanged on all three.
 
 ## Layout
 
