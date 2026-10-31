@@ -5,9 +5,11 @@ list_strategies / finish. Circuits live in a server-side store keyed by id. The 
 circuit is re-verified with tools.check_equiv against the ORIGINAL in code; a
 non-equivalent finish is rejected, and if the model never finishes validly we fall back
 to the best equivalent circuit seen (or the original).
-Backend (--backend auto|meta|nebius): meta = api.meta.ai muse-spark-1.3 (key MODEL_API_KEY or
-META_API_KEY); nebius = Token Factory meta-models/muse-spark-open (NEBIUS_API_KEY). auto prefers
-Meta when a key is set and falls back to Nebius if Meta is missing or errors at runtime. Tries the Responses API first, falls back to chat.completions.
+Backend (--backend auto|meta|fireworks|nebius): meta = api.meta.ai muse-spark-1.3 (key MODEL_API_KEY or
+META_API_KEY); fireworks = accounts/fireworks/models/muse-spark-open (FIREWORKS_API_KEY, model
+overridable via FIREWORKS_MODEL) over Chat Completions; nebius = Token Factory
+meta-models/muse-spark-open (NEBIUS_API_KEY, model overridable via NEBIUS_MODEL; META_MODEL for meta). auto order: meta -> fireworks -> nebius (keyed ones
+only), falling back at runtime on error. Others try Responses first, then chat.completions.
 """
 import json, os, logging
 from .agents import STRATEGIES, work
@@ -15,10 +17,25 @@ from .tools import count_gates, check_equiv
 
 PROVIDERS = {
     "meta":   ("https://api.meta.ai/v1", ("MODEL_API_KEY", "META_API_KEY"), "muse-spark-1.3"),
+    "fireworks": ("https://api.fireworks.ai/inference/v1", ("FIREWORKS_API_KEY",),
+                  "accounts/fireworks/models/muse-spark-open"),
     "nebius": ("https://api.tokenfactory.nebius.com/v1", ("NEBIUS_API_KEY",), "meta-models/muse-spark-open"),
 }
-NUDGE_AT = 3  # remaining tool calls at which we tell the model to finish
-PRICE_IN, PRICE_OUT = 1.25, 4.25  # $ per 1M tokens
+# Tool-call cap: raised 30 -> 50 (2026-10-31). At 30 the Fireworks/Nebius Grover runs spent every
+# call exploring equal-scoring variants and the result came from the fallback, not the model's own
+# finish. 50 leaves headroom for check_equivalence + finish; turns stays above the cap.
+DEFAULT_MAX_TOOL_CALLS = 50
+DEFAULT_TURNS = 60
+NUDGE_AT = 5  # remaining tool calls at which we tell the model to finish (was 3)
+PRICE_IN, PRICE_OUT = 1.25, 4.25  # $ per 1M tokens (default)
+# Per-backend $/1M (input, output). Fireworks serverless muse-spark-open: $1.25 in / $4.25 out
+# (fireworks.ai/models/fireworks/muse-spark-open, checked 2026-10-31).
+PRICES = {"meta": (1.25, 4.25), "nebius": (1.25, 4.25), "fireworks": (1.25, 4.25)}
+BACKENDS = ("meta", "fireworks", "nebius")  # auto order
+# Fireworks Responses tool calling was seen emitting raw template text instead of function_call
+# items, which ends the loop silently (no exception to fall back on), so use Chat Completions.
+FORCE_API = {"meta": "responses", "fireworks": "chat"}
+MAX_TOKENS = {"fireworks": 8192}  # reasoning model: leave room for reasoning + tool call
 
 _P = lambda props, req: {"type": "object", "properties": props, "required": req,
                          "additionalProperties": False}
@@ -38,19 +55,30 @@ CHAT_TOOLS = [{"type": "function", "function": {"name": n, "description": d, "pa
               for n, d, p in FUNCS]
 
 
+MODEL_ENV = {"meta": "META_MODEL", "fireworks": "FIREWORKS_MODEL", "nebius": "NEBIUS_MODEL"}
+
+
+def default_model(provider):
+    """Per-backend model override, e.g. NEBIUS_MODEL=meta-models/muse-spark-open-1026."""
+    env = MODEL_ENV.get(provider)
+    if env and os.environ.get(env):
+        return os.environ[env]
+    return PROVIDERS[provider][2]
+
+
 def key_for(provider):
     return next((os.environ[e] for e in PROVIDERS[provider][1] if os.environ.get(e)), None)
 
 
 def select_backends(backend="auto"):
-    """Ordered list of backends to try. auto: meta (if keyed) then nebius."""
-    if backend in ("meta", "nebius"):
+    """Ordered list of backends to try. auto: meta -> fireworks -> nebius (keyed only)."""
+    if backend in BACKENDS:
         if not key_for(backend):
             raise RuntimeError(f"--backend {backend}: none of {PROVIDERS[backend][1]} is set")
         return [backend]
-    order = [b for b in ("meta", "nebius") if key_for(b)]
+    order = [b for b in BACKENDS if key_for(b)]
     if not order:
-        raise RuntimeError("no Meta (MODEL_API_KEY/META_API_KEY) or NEBIUS_API_KEY key set")
+        raise RuntimeError("no Meta (MODEL_API_KEY/META_API_KEY), FIREWORKS_API_KEY or NEBIUS_API_KEY key set")
     return order
 
 
@@ -175,10 +203,11 @@ def _loop_responses(ai, model, sess, prompt, turns, tot):
     return getattr(r, "output_text", "")
 
 
-def _loop_chat(ai, model, sess, prompt, turns, tot):
+def _loop_chat(ai, model, sess, prompt, turns, tot, max_tokens=None):
     msgs = [{"role": "system", "content": prompt[0]}, {"role": "user", "content": prompt[1]}]
+    extra = {"max_tokens": max_tokens} if max_tokens else {}
     for _ in range(turns):
-        r = ai.chat.completions.create(model=model, messages=msgs, tools=CHAT_TOOLS)
+        r = ai.chat.completions.create(model=model, messages=msgs, tools=CHAT_TOOLS, **extra)
         _usage(r.usage, tot)
         m = r.choices[0].message
         if not m.tool_calls:
@@ -243,11 +272,11 @@ def _client(provider):
     return OpenAI(base_url=PROVIDERS[provider][0], api_key=key_for(provider))
 
 
-def run_agent(name, original, ai=None, model=None, provider=None, max_calls=30, turns=40, api="auto",
+def run_agent(name, original, ai=None, model=None, provider=None, max_calls=DEFAULT_MAX_TOOL_CALLS, turns=DEFAULT_TURNS, api="auto",
               backend=None, clients=None):
     """Returns dict with chain/metrics/equiv plus tool_calls, usage, cost, api, provider, errors.
 
-    ai/provider: run a single given client (tests). Otherwise backend auto|meta|nebius picks
+    ai/provider: run a single given client (tests). Otherwise backend auto|meta|fireworks|nebius picks
     the order; clients={provider: client} overrides construction (tests)."""
     if ai is not None:
         return _run_one(name, original, ai, model or "mock", provider, max_calls, turns, api)
@@ -255,8 +284,8 @@ def run_agent(name, original, ai=None, model=None, provider=None, max_calls=30, 
     errors, r = [], None
     for prov in order:
         cl = (clients or {}).get(prov) or _client(prov)
-        r = _run_one(name, original, cl, model or PROVIDERS[prov][2], prov, max_calls, turns,
-                     "responses" if prov == "meta" else api)
+        r = _run_one(name, original, cl, model or default_model(prov), prov, max_calls, turns,
+                     FORCE_API.get(prov, api))
         r["errors"] = errors + r["errors"]
         if r["api"] and "errored" not in r["api"]:
             break
@@ -301,7 +330,10 @@ def _run_one_inner(name, original, ai, model, provider, max_calls, turns, api):
     order = {"auto": ["responses", "chat"], "responses": ["responses"], "chat": ["chat"]}[api]
     for kind in order:
         try:
-            text = (_loop_responses if kind == "responses" else _loop_chat)(ai, model, sess, prompt, turns, tot)
+            if kind == "responses":
+                text = _loop_responses(ai, model, sess, prompt, turns, tot)
+            else:
+                text = _loop_chat(ai, model, sess, prompt, turns, tot, MAX_TOKENS.get(provider))
             used = kind
             break
         except Exception as e:
@@ -310,7 +342,8 @@ def _run_one_inner(name, original, ai, model, provider, max_calls, turns, api):
                 used = kind + " (errored)"
                 break
     res = sess.result()
-    cost = tot["input"] / 1e6 * PRICE_IN + tot["output"] / 1e6 * PRICE_OUT
+    pin, pout = PRICES.get(provider, (PRICE_IN, PRICE_OUT))
+    cost = tot["input"] / 1e6 * pin + tot["output"] / 1e6 * pout
     return {**res, "strategy": " -> ".join(res["chain"]) or "original", "tool_calls": sess.calls,
             "n_tool_calls": len(sess.calls), "usage": tot, "cost_usd": cost, "api": used,
             "provider": provider, "model": model, "errors": errors, "final_text": text,

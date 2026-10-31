@@ -1,4 +1,4 @@
-"""CLI: python -m quantum_optimizer.orchestrator [--planner chain|agent] [--backend auto|meta|nebius] [--max-tool-calls N] [--provider meta|baseten|none] [--rounds N] [--beam K] [--only NAME ...] [--[no-]nemotron-review]"""
+"""CLI: python -m quantum_optimizer.orchestrator [--planner chain|agent] [--backend auto|meta|fireworks|nebius] [--max-tool-calls N] [--provider meta|baseten|none] [--rounds N] [--beam K] [--only NAME ...] [--[no-]nemotron-review]"""
 import argparse, logging, re
 from .agents import STRATEGIES, swarm
 from .benchmarks import all_benchmarks
@@ -32,9 +32,9 @@ def main(argv=None):
     p.add_argument("--beam", type=int, default=3, help="circuits kept per round (1 = greedy)")
     p.add_argument("--planner", choices=["chain", "agent"], default="chain",
                    help="chain = multi-round chaining loop (default); agent = Muse Spark tool-calling planner")
-    p.add_argument("--max-tool-calls", type=int, default=30)
-    p.add_argument("--backend", choices=["auto", "meta", "nebius"], default="auto",
-                   help="agent planner backend: meta muse-spark-1.3, nebius muse-spark-open, auto = meta if keyed else nebius")
+    p.add_argument("--max-tool-calls", type=int, default=agent_planner.DEFAULT_MAX_TOOL_CALLS)
+    p.add_argument("--backend", choices=["auto", "meta", "fireworks", "nebius"], default="auto",
+                   help="agent planner backend: meta muse-spark-1.3, fireworks/nebius muse-spark-open; auto = meta -> fireworks -> nebius (keyed only)")
     p.add_argument("--only", nargs="*", help="benchmark names to run (default: all)")
     a = p.parse_args(argv)
     lg = logging.getLogger("legionary")

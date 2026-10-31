@@ -78,7 +78,7 @@ def test_bad_args_and_chat_fallback():
 
 
 def _clear(mp):
-    for e in ("MODEL_API_KEY", "META_API_KEY", "NEBIUS_API_KEY"):
+    for e in ("MODEL_API_KEY", "META_API_KEY", "NEBIUS_API_KEY", "FIREWORKS_API_KEY", "FIREWORKS_MODEL"):
         mp.delenv(e, raising=False)
 
 
@@ -116,7 +116,7 @@ def test_finish_nudge():
     nudges = [m for inp in ai.responses.inputs for m in inp
               if isinstance(m, dict) and m.get("role") == "user" and "remain" in m.get("content", "")]
     assert r["nudged"] and nudges and r["source"] == "model"
-    import inspect; assert inspect.signature(ap.run_agent).parameters["max_calls"].default == 30
+    import inspect; assert inspect.signature(ap.run_agent).parameters["max_calls"].default == 50
 
 
 # ---- LangSmith tracing (offline: env monkeypatched, client mocked, sockets blocked) ----
@@ -167,8 +167,91 @@ def test_tracing_enabled_with_env(monkeypatch):
     assert names.count("run_pass") == 2 and "finish" in names
     top = next(x for x in runs if x["name"] == "legionary.agent_planner")
     md = top.get("extra", {}).get("metadata", {})
-    assert md.get("backend") == "nebius" and md.get("circuit") == "grover3" and md.get("max_calls") == 30
+    assert md.get("backend") == "nebius" and md.get("circuit") == "grover3" and md.get("max_calls") == 50
     assert top.get("session_name") == "legionary"
     ends = [c.kwargs for c in client.update_run.call_args_list]
     outs = [e.get("outputs") or {} for e in ends]
     assert any(o.get("gates") == 81 and o.get("chain") == ["level1", "level2"] and "nudged" in o for o in outs)
+
+
+# ---- Fireworks backend (offline, mocked chat client) ----
+def _tc(i, name, **args):
+    return NS(id=f"t{i}", type="function", function=NS(name=name, arguments=json.dumps(args)))
+
+
+class FakeChat:
+    def __init__(self, script):
+        self.script, self.i, self.kw = script, 0, []
+    def create(self, **kw):
+        self.kw.append(kw)
+        step = self.script[min(self.i, len(self.script) - 1)]
+        self.i += 1
+        calls = step(kw["messages"]) if callable(step) else step
+        return NS(usage=NS(prompt_tokens=200, completion_tokens=50),
+                  choices=[NS(message=NS(content="", tool_calls=calls or None))])
+
+
+def test_fireworks_key_and_model(monkeypatch):
+    import pytest
+    _clear(monkeypatch)
+    with pytest.raises(RuntimeError):
+        ap.select_backends("fireworks")
+    monkeypatch.setenv("FIREWORKS_API_KEY", "fw-test")
+    assert ap.select_backends("fireworks") == ["fireworks"] == ap.select_backends("auto")
+    assert ap.key_for("fireworks") == "fw-test"
+    assert ap.PROVIDERS["fireworks"][0] == "https://api.fireworks.ai/inference/v1"
+    assert ap.default_model("fireworks") == "accounts/fireworks/models/muse-spark-open"
+    monkeypatch.setenv("FIREWORKS_MODEL", "accounts/x/models/y")
+    assert ap.default_model("fireworks") == "accounts/x/models/y"
+
+
+def test_auto_order_meta_fireworks_nebius(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("NEBIUS_API_KEY", "n"); monkeypatch.setenv("FIREWORKS_API_KEY", "f")
+    assert ap.select_backends("auto") == ["fireworks", "nebius"]
+    monkeypatch.setenv("META_API_KEY", "m")
+    assert ap.select_backends("auto") == ["meta", "fireworks", "nebius"]
+
+
+def test_fireworks_chat_tool_loop_and_fallback(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("META_API_KEY", "m"); monkeypatch.setenv("FIREWORKS_API_KEY", "f")
+    class Boom:
+        def create(self, **kw): raise RuntimeError("401 bad key")
+    tool_msg = lambda msgs: json.loads([m for m in msgs if m["role"] == "tool"][-1]["content"])
+    chat = FakeChat([
+        [_tc(1, "run_pass", circuit_id="c0", strategy="level1")],
+        lambda m: [_tc(2, "run_pass", circuit_id=tool_msg(m)["circuit_id"], strategy="level2")],
+        lambda m: [_tc(3, "check_equivalence", circuit_id=tool_msg(m)["circuit_id"])],
+        lambda m: [_tc(4, "finish", circuit_id="c2")],
+    ])
+    fw = NS(responses=Boom(), chat=NS(completions=chat))  # responses must NOT be used
+    r = ap.run_agent("grover3", G, clients={"meta": NS(responses=Boom()), "fireworks": fw})
+    assert r["provider"] == "fireworks" and r["backends_tried"] == ["meta", "fireworks"]
+    assert r["api"] == "chat" and r["source"] == "model" and r["equiv"] and r["gates"] == 81
+    assert r["model"] == "accounts/fireworks/models/muse-spark-open"
+    kw = chat.kw[-1]
+    assert kw["max_tokens"] >= 4096 and len(kw["tools"]) == 5
+    tools = [m for m in kw["messages"] if m["role"] == "tool"]
+    assert [t["tool_call_id"] for t in tools] == ["t1", "t2", "t3", "t4"]
+    assert r["usage"] == {"input": 800, "output": 200}
+    assert abs(r["cost_usd"] - (800 * 1.25 + 200 * 4.25) / 1e6) < 1e-12
+
+
+def test_fireworks_chat_cap_nudge_fallback(monkeypatch):
+    _clear(monkeypatch)
+    chat = FakeChat([[_tc(1, "metrics", circuit_id="c0")]])  # never finishes
+    r = ap.run_agent("grover3", G, clients={"fireworks": NS(chat=NS(completions=chat))},
+                     provider="fireworks", max_calls=5, turns=50)
+    assert r["n_tool_calls"] == 5 and r["nudged"] and r["source"] == "fallback-best-equivalent"
+    assert any(m["role"] == "user" and "tool calls remain" in m["content"] for m in chat.kw[-1]["messages"])
+
+
+def test_nebius_and_meta_model_override(monkeypatch):
+    from quantum_optimizer import agent_planner as ap
+    monkeypatch.delenv("NEBIUS_MODEL", raising=False)
+    assert ap.default_model("nebius") == "meta-models/muse-spark-open"
+    monkeypatch.setenv("NEBIUS_MODEL", "meta-models/muse-spark-open-1026")
+    assert ap.default_model("nebius") == "meta-models/muse-spark-open-1026"
+    monkeypatch.setenv("META_MODEL", "muse-spark-x")
+    assert ap.default_model("meta") == "muse-spark-x"
