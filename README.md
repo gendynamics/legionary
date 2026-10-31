@@ -1,4 +1,4 @@
-# quantum-optimizer
+# legionary
 
 Agentic quantum circuit optimizer for the Meta Global AI Developer Hackathon.
 A **Muse Spark 1.3** planner (Meta Responses API) picks strategies, a **Muse Code** swarm of
