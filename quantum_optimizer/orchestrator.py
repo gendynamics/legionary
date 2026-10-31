@@ -1,4 +1,4 @@
-"""CLI: python -m quantum_optimizer.orchestrator [--provider meta|baseten|none] [--rounds N] [--beam K] [--only NAME ...] [--[no-]nemotron-review]"""
+"""CLI: python -m quantum_optimizer.orchestrator [--planner chain|agent] [--backend auto|meta|nebius] [--max-tool-calls N] [--provider meta|baseten|none] [--rounds N] [--beam K] [--only NAME ...] [--[no-]nemotron-review]"""
 import argparse, logging, re
 from .agents import STRATEGIES, swarm
 from .benchmarks import all_benchmarks
@@ -7,6 +7,7 @@ from . import nemotron
 from .report import table
 from .planner import plan
 from .rounds import optimize
+from . import agent_planner
 
 
 def pick(name, qasm, provider, ai=None, round_no=1, chain=None):
@@ -29,6 +30,11 @@ def main(argv=None):
                    help="independent Nemotron review via Nebius (default: on; skipped if NEBIUS_API_KEY unset)")
     p.add_argument("--rounds", type=int, default=4, help="max optimize rounds (stops early at a fixed point)")
     p.add_argument("--beam", type=int, default=3, help="circuits kept per round (1 = greedy)")
+    p.add_argument("--planner", choices=["chain", "agent"], default="chain",
+                   help="chain = multi-round chaining loop (default); agent = Muse Spark tool-calling planner")
+    p.add_argument("--max-tool-calls", type=int, default=30)
+    p.add_argument("--backend", choices=["auto", "meta", "nebius"], default="auto",
+                   help="agent planner backend: meta muse-spark-1.3, nebius muse-spark-open, auto = meta if keyed else nebius")
     p.add_argument("--only", nargs="*", help="benchmark names to run (default: all)")
     a = p.parse_args(argv)
     lg = logging.getLogger("legionary")
@@ -43,6 +49,19 @@ def main(argv=None):
         if a.only and name not in a.only:
             continue
         recs = []
+        if a.planner == "agent":
+            best = agent_planner.run_agent(name, qasm, max_calls=a.max_tool_calls, backend=a.backend)
+            lg.info("agent planner backend ran: %s (%s); tried %s", best["provider"], best["model"], best.get("backends_tried"))
+            best["rounds_run"] = best["n_tool_calls"]
+            rows.append((name, qasm, best))
+            print(f"agent {name}: backend={best['provider']} model={best['model']} api={best['api']} "
+                  f"chain={best['strategy']} source={best['source']} nudged={best['nudged']} equiv={best['equiv']} "
+                  f"tool_calls={best['n_tool_calls']} tokens={best['usage']} cost=${best['cost_usd']:.5f}")
+            for i, c in enumerate(best["tool_calls"], 1):
+                print(f"  call {i}: {c['name']}({c['args']}) -> {c['result']}")
+            for e in best["errors"]:
+                print(f"  API error: {e}")
+            continue
         best = optimize(name, qasm, picker=picker, rounds=a.rounds, beam=a.beam, second_opinion=second, records=recs)
         rows.append((name, qasm, best))
         reviews += [(name, r) for r in recs]
