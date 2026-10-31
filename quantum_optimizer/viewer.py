@@ -759,6 +759,8 @@ def main(argv=None):
     p.add_argument("--stats", action="store_true", help="3d: show fps / draw calls / instance counts")
     p.add_argument("--director-wait", type=float, default=0.0,
                    help="seconds to wait for the model theme before drawing (screenshots)")
+    p.add_argument("--nemotron-review", action=argparse.BooleanOptionalAction, default=None,
+                   help="accepted for parity with the orchestrator; the viewer never runs Nemotron")
     a = p.parse_args(argv)
     if a.render_scale:
         a.render_scale = min(1.0, max(0.25, a.render_scale))

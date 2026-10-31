@@ -24,20 +24,20 @@ Type each command on its own line; pasting several at once can add hidden charac
 Run the optimizer and open the live 3D window together (no API key needed):
 
 ```bash
-.venv/bin/python3 -m quantum_optimizer.orchestrator --only grover3 --viewer --angle 40 --director-backend off
+.venv/bin/python3 -m quantum_optimizer.orchestrator --only grover3 --viewer --angle 40 --director-backend off --no-nemotron-review
 ```
 
 Full agent run on Fireworks (Muse Spark open weights) with the viewer:
 
 ```bash
 export FIREWORKS_API_KEY=...
-.venv/bin/python3 -m quantum_optimizer.orchestrator --planner agent --backend fireworks --only grover3 --viewer --angle 40
+.venv/bin/python3 -m quantum_optimizer.orchestrator --planner agent --backend fireworks --only grover3 --viewer --angle 40 --no-nemotron-review
 ```
 
 Viewer only, with a synthetic demo run (not real data):
 
 ```bash
-.venv/bin/python3 -m quantum_optimizer.viewer --demo --director-backend off
+.venv/bin/python3 -m quantum_optimizer.viewer --demo --director-backend off --no-nemotron-review
 ```
 
 Controls: drag to orbit, scroll to zoom, Esc to close. On macOS the window can open behind
