@@ -498,6 +498,17 @@ def auto_scale(win, fb):
     return 0.5 if fb[0] > win[0] * 1.5 else 0.75
 
 
+
+def _raise_window():
+    """macOS often opens a terminal-launched SDL window behind the editor; bring it to the front."""
+    try:
+        from pygame._sdl2.video import Window
+        w = Window.from_display_module()
+        w.focus()
+        print(f"Legionary viewer window open ({w.size[0]}x{w.size[1]}) - check the Dock if it's hidden", flush=True)
+    except Exception as e:  # never block the viewer over window focus
+        print(f"Legionary viewer window open (could not raise it: {e})", flush=True)
+
 def run(a, director):
     """Main loop for --renderer 3d (window) or a headless screenshot."""
     import moderngl
@@ -513,6 +524,7 @@ def run(a, director):
         target = ctx.framebuffer([ctx.texture((W, H), 4)])
         fb = (W, H)
     else:
+        os.environ.setdefault("SDL_VIDEO_CENTERED", "1")  # open on-screen, centered
         pg.init()
         pg.display.gl_set_attribute(pg.GL_CONTEXT_MAJOR_VERSION, 3)
         pg.display.gl_set_attribute(pg.GL_CONTEXT_MINOR_VERSION, 3)
@@ -523,6 +535,7 @@ def run(a, director):
         except pg.error:
             pg.display.set_mode((W, H), pg.OPENGL | pg.DOUBLEBUF | pg.RESIZABLE)
         pg.display.set_caption("Legionary - live circuit")
+        _raise_window()
         ctx = moderngl.create_context()
         target = ctx.screen
         fb = tuple(ctx.screen.viewport[2:]) or (W, H)

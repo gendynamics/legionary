@@ -1,3 +1,4 @@
+import pytest
 """Offline mocked tests for the Muse Spark agent tool loop (no network)."""
 import json
 from types import SimpleNamespace as NS
@@ -137,6 +138,7 @@ def _no_network(monkeypatch):
 
 
 def test_tracing_disabled_without_env(monkeypatch):
+    pytest.importorskip("langsmith")
     _no_network(monkeypatch)
     for k in ("LANGSMITH_TRACING", "LANGSMITH_API_KEY", "LANGCHAIN_TRACING_V2", "LANGCHAIN_API_KEY"):
         monkeypatch.delenv(k, raising=False)
@@ -151,7 +153,7 @@ def test_tracing_disabled_without_env(monkeypatch):
 
 def test_tracing_enabled_with_env(monkeypatch):
     from unittest.mock import MagicMock
-    import langsmith
+    langsmith = pytest.importorskip("langsmith")
     _no_network(monkeypatch)
     monkeypatch.setenv("LANGSMITH_TRACING", "true")
     monkeypatch.setenv("LANGSMITH_API_KEY", "test-not-a-real-key")
