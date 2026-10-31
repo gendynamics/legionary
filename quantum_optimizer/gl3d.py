@@ -385,6 +385,7 @@ class GLRenderer:
         nc, nf, nr = self.n
         common = dict(u_vp=tuple(vp.T.flatten()), u_eye=tuple(eye), u_fog=L.fog, u_bg=rgb(L.background), u_time=now)
         self.f_scene.use()
+        self.f_scene.depth_mask = True  # clear() honors the mask; it was left False last frame
         self.f_scene.clear(*rgb(L.background), 1.0, depth=1.0)
         ctx.disable(mgl.DEPTH_TEST | mgl.CULL_FACE | mgl.BLEND)
         self.t_sky.use(0)
