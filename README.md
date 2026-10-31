@@ -7,12 +7,42 @@ unitary equivalence check (Qiskit `Operator.equiv`).
 
 ## Quick start
 
+Calling the venv's Python by path (`.venv/bin/python3`) makes every command use the venv,
+even if `python` or `pytest` on your PATH points at a system install.
+
 ```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -e ".[test]"
-pytest -q
-python -m quantum_optimizer.orchestrator --provider none   # deterministic swarm, no API key
+python3 -m venv .venv
+.venv/bin/python3 -m pip install -e ".[test]"   # installs the package + all deps + pytest
+.venv/bin/python3 -m pytest -q                  # 69 tests, offline (no keys, no network)
+.venv/bin/python3 -m quantum_optimizer.orchestrator --provider none   # deterministic swarm, no API key
 ```
+
+Type each command on its own line; pasting several at once can add hidden characters.
+
+## Live 3D viewer
+
+Run the optimizer and open the live 3D window together (no API key needed):
+
+```bash
+.venv/bin/python3 -m quantum_optimizer.orchestrator --only grover3 --viewer --angle 40 --director-backend off
+```
+
+Full agent run on Fireworks (Muse Spark open weights) with the viewer:
+
+```bash
+export FIREWORKS_API_KEY=...
+.venv/bin/python3 -m quantum_optimizer.orchestrator --planner agent --backend fireworks --only grover3 --viewer --angle 40
+```
+
+Viewer only, with a synthetic demo run (not real data):
+
+```bash
+.venv/bin/python3 -m quantum_optimizer.viewer --demo --director-backend off
+```
+
+Controls: drag to orbit, scroll to zoom, Esc to close. On macOS the window can open behind
+your editor; click the Python icon in the Dock. "waiting for stream" means no run is feeding
+the window yet: launch it through the orchestrator with `--viewer` instead of on its own.
 
 ## Providers
 
