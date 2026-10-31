@@ -254,7 +254,7 @@ class InstanceCache:
     """Builds instance arrays only when the circuit changed (State.version) or something is still
     animating; then culls into preallocated buffers each frame. Exposes counts for the draw calls:
     one instanced call each for spheres, edges (dashed/dotted via the style attribute), ribbons and
-    flames (near + working only)."""
+    flames (near idle + working; idle at pilot-light strength)."""
 
     def __init__(self, cap=256):
         self.version = None
@@ -292,7 +292,7 @@ class InstanceCache:
         nc = int(m.sum()); self.vis_cubes[:nc] = c[m]
         if len(c):
             dist = np.linalg.norm(c[:, :3] - eye, axis=1)
-            fm = m & (c[:, 4] == STATE_CODE[WORKING]) & (dist < LOD_FAR)
+            fm = m & (c[:, 4] <= STATE_CODE[WORKING]) & (dist < LOD_FAR)
         else:
             fm = m
         nf = int(fm.sum()); self.vis_flames[:nf] = c[fm]

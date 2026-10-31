@@ -333,8 +333,8 @@ class State:
             g.alpha = min(1.0, g.alpha + dt * 1.5)
             if st == WORKING:
                 g.spin += dt * 2.5 * look().spin_speed
-            elif st == IDLE:  # settle: ease back to a square pose
-                g.spin = round(g.spin / (math.pi / 2)) * (math.pi / 2) * min(1, dt * 4) + g.spin * (1 - min(1, dt * 4))
+            elif st == IDLE:  # pilot light: keep a slow spin so finished runs never go dark
+                g.spin += dt * 0.6 * look().spin_speed
         self.view_depth += (self.depth - self.view_depth) * min(1, dt * 2)
         if self.now_gates is not None:
             d = self.now_gates - self.shown

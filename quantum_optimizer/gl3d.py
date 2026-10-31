@@ -9,7 +9,7 @@ Tuned for older Mac GPUs (Iris Plus 640/650, Radeon Pro 555/560; OpenGL 4.1, Ret
  * bloom = one bright-pass that downsamples straight to 1/4 res + one H + one V blur that use
    bilinear tap merging (3 fetches = 5-tap gaussian);
  * instances are rebuilt only when the circuit changes or something animates, frustum-culled
-   into preallocated numpy buffers, flames only for near working cubes (LOD), and drawn with
+   into preallocated numpy buffers, flames only for near live cubes (LOD; idle ones at pilot-light strength), and drawn with
    one instanced call each: spheres, edges (solid/dashed/dotted via an instance attribute),
    ribbons, flames. 10 draw calls per frame in total;
  * the pygame UI overlay is re-uploaded only when its content changes.
@@ -183,7 +183,7 @@ in vec3 i_pos; in float i_half; in float i_state; in float i_spin; in float i_al
 out vec2 v_uv; out float v_k; out float v_spin; out float v_seed;
 uniform vec3 u_right; uniform vec3 u_up;
 void main(){
-  bool on = abs(i_state - 1.0) < 0.1;
+  bool on = i_state < 1.5;   // idle + working: idle keeps a dim pilot-light ring
   float r = i_half * 0.58;
   v_uv = in_corner * 1.85; v_spin = i_spin; v_seed = fract(i_pos.z * 0.37 + i_pos.x * 0.11);
   v_k = (on ? 1.0 : 0.0) * i_alpha * fogk(i_pos) * (0.35 + 0.65 * i_work);

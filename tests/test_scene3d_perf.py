@@ -96,7 +96,7 @@ def test_cull_lod_and_batching_counts():
     st = _state(); ic = S.InstanceCache()
     ic.refresh(st, 10.0, viewer.Look())
     nc, nf, nr = ic.cull(_vp(eye=(0, 4, 14), at=(0, 0, -5)), (0, 4, 14))
-    assert (nc, nf, nr) == (8, 2, 3)       # all cubes, flames only for the 2 working cubes, 3 ribbons
+    assert (nc, nf, nr) == (8, 5, 3)       # all cubes; flames for 2 working + 3 idle (pilot light), none for removed/failed; 3 ribbons
     far = (0, 4, S.LOD_FAR + 30)
     nc2, nf2, _ = ic.cull(_vp(eye=far, at=(0, 0, -5)), far)
     assert nc2 == 8 and nf2 == 0            # LOD: far working cubes lose their flames
