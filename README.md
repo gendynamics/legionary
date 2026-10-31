@@ -9,7 +9,7 @@ unitary equivalence check (Qiskit `Operator.equiv`).
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt pytest
+pip install -e ".[test]"
 pytest -q
 python -m quantum_optimizer.orchestrator --provider none   # deterministic swarm, no API key
 ```

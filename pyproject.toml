@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "legionary"
+version = "0.1.0"
+description = "Agentic quantum circuit optimizer with equivalence-checked rewrites"
+requires-python = ">=3.10"
+dependencies = [
+    "qiskit>=2.0,<3",
+    "qiskit-aer>=0.17",
+    "openai>=1.40",
+    "numpy>=1.26",
+    "pygame>=2.5",
+    "moderngl>=5.10",
+    "langsmith>=0.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["quantum_optimizer*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
