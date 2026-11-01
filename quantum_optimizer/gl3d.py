@@ -128,12 +128,14 @@ void main(){
   vec3 dir = normalize(B - A);
   vec3 side = normalize(cross(dir, P - u_eye));
   float i_alpha_k = 1.0;
-  float wdt = i_half * (0.022 + 0.02 * i_work) * (i_state > 1.5 ? 0.8 : 1.0);
-  if (length(i_pos - u_eye) > u_lod_far && i_style > 0.5) i_alpha_k = 0.5;
+  float hl = (i_state > 1.5) ? i_work : 0.0;   // wind-down highlight for removed / failed frames
+  float wdt = i_half * (i_state > 1.5 ? (0.0176 + 0.012 * hl) : (0.022 + 0.02 * i_work));
+  bool far = length(i_pos - u_eye) > u_lod_far && hl < 0.5;  // highlighted frames keep full LOD
+  if (far && i_style > 0.5) i_alpha_k = 0.5;
   P += side * in_side * wdt * 2.5;
   v_t = in_along * 2.0; v_side = in_side;
-  v_style = (length(i_pos - u_eye) > u_lod_far) ? 0.0 : i_style;   // LOD: far frames solid
-  float boost = (i_state > 1.5) ? 2.2 : u_glow * (1.0 + 0.8 * i_work);
+  v_style = far ? 0.0 : i_style;   // LOD: far frames solid
+  float boost = (i_state > 1.5) ? 2.2 * (1.0 + 1.3 * hl) : u_glow * (1.0 + 0.8 * i_work);
   v_col = i_col * boost * fogk(P); v_a = i_alpha * i_alpha_k;
   gl_Position = u_vp * vec4(P, 1.0);
 }"""
@@ -238,17 +240,35 @@ void main(){
 }"""
 
 
-def edge_mesh():
-    """12 cube edges as camera-facing quads: per vertex (a.xyz, b.xyz, along, side)."""
-    corners = [np.array([x, y, z], float) for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)]
+SHAPES = ("diamond", "cube")
+# diamond = octahedron, slightly elongated vertically (matches the demo video's gate frames).
+# Its 12 edges equal the cube's, so instance layout, vertex count and draw calls are unchanged.
+DIAMOND_Y, DIAMOND_XZ = 1.32, 1.08
+
+
+def shape_edges(shape="diamond"):
+    """-> (vertices [V,3], edges [(i, j)]) of the gate frame in unit half-size space."""
+    if shape == "cube":
+        v = [np.array([x, y, z], float) for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)]
+        e = [(i, j) for i in range(8) for j in range(i + 1, 8) if np.abs(v[i] - v[j]).sum() == 2]
+        return np.array(v), e
+    if shape != "diamond":
+        raise ValueError(f"unknown shape {shape!r}")
+    v = np.array([[0, DIAMOND_Y, 0], [0, -DIAMOND_Y, 0], [DIAMOND_XZ, 0, 0],
+                  [0, 0, DIAMOND_XZ], [-DIAMOND_XZ, 0, 0], [0, 0, -DIAMOND_XZ]], float)
+    ring = [2, 3, 4, 5]
+    e = [(0, k) for k in ring] + [(1, k) for k in ring] + [(ring[i], ring[(i + 1) % 4]) for i in range(4)]
+    return v, e
+
+
+def edge_mesh(shape="diamond"):
+    """Gate frame edges (12 for both shapes) as camera-facing quads: per vertex (a.xyz, b.xyz, along, side)."""
+    v, e = shape_edges(shape)
     out = []
-    for i in range(8):
-        for j in range(i + 1, 8):
-            if np.abs(corners[i] - corners[j]).sum() != 2:
-                continue
-            a, b = corners[i], corners[j]
-            for t, s in ((0, -1), (1, -1), (1, 1), (0, -1), (1, 1), (0, 1)):
-                out.append([*a, *b, t, s])
+    for i, j in e:
+        a, b = v[i], v[j]
+        for t, s in ((0, -1), (1, -1), (1, 1), (0, -1), (1, 1), (0, 1)):
+            out.append([*a, *b, t, s])
     return np.array(out, np.float32)
 
 
@@ -271,7 +291,7 @@ class GLRenderer:
     """All GPU state. render() issues exactly 10 draw calls: bg, grid, spheres, edges, ribbons,
     flames, bright/downsample, blur H, blur V, composite."""
 
-    def __init__(self, ctx, size, scale=0.75):
+    def __init__(self, ctx, size, scale=0.75, shape="diamond"):
         import moderngl
         self.mgl, self.ctx, self.scale = moderngl, ctx, scale
         P = lambda vs, fs: ctx.program(vertex_shader=vs, fragment_shader=fs)
@@ -281,7 +301,8 @@ class GLRenderer:
         self.p_rib, self.p_flame = P(RIBBON_VS, RIBBON_FS), P(FLAME_VS, FLAME_FS)
         self.p_bright, self.p_blur, self.p_comp = P(QUAD_VS, BRIGHT_FS), P(QUAD_VS, BLUR_FS), P(QUAD_VS, COMP_FS)
         self.quad = ctx.buffer(QUAD)
-        self.edges = ctx.buffer(edge_mesh())
+        self.shape = shape
+        self.edges = ctx.buffer(edge_mesh(shape))
         self.rmesh = ctx.buffer(ribbon_mesh(24))
         self.cache = scene3d.InstanceCache()
         self._bufs(self.cache.cap)
@@ -454,7 +475,7 @@ HINT = "drag orbit - scroll zoom - WASD pan - R reset"
 
 def ui_key(st, now, L, extra=()):
     """Everything the overlay shows; the texture is re-uploaded only when this changes."""
-    return (L.label, int(round(st.shown)), st.step, st.status, st.equiv, st.circuit, st.depth, st.cx,
+    return (L.label, int(round(st.shown)), st.step, st.status, st.wd_text, st.equiv, st.circuit, st.depth, st.cx,
             st.before, st.depth0, st.cx0, st.done, now - st.flash < 1.2, st.demo, *extra)
 
 
@@ -542,9 +563,10 @@ def run(a, director):
         fb = tuple(ctx.screen.viewport[2:]) or (W, H)
     scale = a.render_scale or auto_scale((W, H), fb)
     # the UI/overlay is laid out in window points; the GL target may be the Retina framebuffer
-    rend = GLRenderer(ctx, (W, H) if headless else fb, scale)
+    rend = GLRenderer(ctx, (W, H) if headless else fb, scale, getattr(a, "shape", "diamond"))
     q, paused = viewer.make_source(a)
     st, rig, fs = viewer.State(), scene3d.CameraRig(a.angle), viewer.fonts(pg)
+    st.configure_winddown(a.winddown_hold, a.winddown_fade, not a.no_winddown)
     cam = scene3d.CameraController(rig)
     ui = pg.Surface(rend.size, pg.SRCALPHA)
     if rend.size != (W, H):

@@ -7,7 +7,7 @@ import math
 
 import numpy as np
 
-from .viewer import IDLE, WORKING, FAILED, REMOVED
+from .viewer import IDLE, WORKING, FAILED, REMOVED, HL_FAILED, HL_REMOVED, highlight
 
 GAP_Q, GAP_L = 3.4, 2.7         # world units between qubit rows / circuit layers
 CUBE = 0.85                      # cube half-size (CX cubes x1.12)
@@ -30,12 +30,18 @@ def build(st, now, look):
     anim = False
     still_c, still_a, still_s = look.still
     fail_c, fail_a, fail_s = look.failed
+    wk, hl = getattr(st, "wd_k", 1.0), getattr(st, "wd_hl", 0.0)  # post-run wind-down highlight + fade
+    still_c, still_a = highlight(still_c, still_a, hl, HL_REMOVED)
+    fail_c, fail_a = highlight(fail_c, fail_a, hl, HL_FAILED)
+    still_a, fail_a = still_a * wk, fail_a * wk
     for g in st.gates.values():
         state = g.state(now)
         if state != REMOVED and (g.alpha < 0.999 or abs(g.target - g.layer) > 1e-3 or state == WORKING
                                  or abs(g.spin - round(g.spin / (math.pi / 2)) * (math.pi / 2)) > 1e-3):
             anim = True
         work = max(0.0, min(1.0, (g.work_until - now) / 0.6)) if state == WORKING else 0.0
+        if state in (REMOVED, FAILED):
+            work = hl  # the 'work' slot carries the wind-down highlight for empty frames (no new attribute)
         if state == REMOVED:
             col, alpha, style = still_c, still_a, still_s
         elif state == FAILED:

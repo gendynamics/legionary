@@ -193,6 +193,19 @@ def demo_events(seed=3):
 #            contains the gate again it lights back up.
 WORK_SECS, FAIL_SECS, HOLD_FAIL_SECS = 2.5, 0.6, 1.5
 IDLE, WORKING, FAILED, REMOVED = "idle", "working", "failed", "removed"
+# Wind-down: once a run is completely finished (result / run_end / end of playback), removed and failed
+# frames stay fully visible for WINDDOWN_HOLD seconds (time to read / record them on camera), then fade
+# out over WINDDOWN_FADE seconds (ease-out) and are dropped. Live (idle/working) gates are never touched.
+WINDDOWN_HOLD, WINDDOWN_FADE = 12.0, 3.0
+WINDDOWN_RAMP = 0.5  # highlight eases up over this long at hold start (removed/failed frames brighten)
+HL_REMOVED, HL_FAILED = (215, 225, 235), (255, 70, 80)  # bright cool grey / strong red (never turquoise)
+
+
+def highlight(base_col, base_a, hl, bright):
+    """Wind-down highlight: blend a still/failed frame's colour + alpha toward its bright readable look."""
+    if hl <= 0.0:
+        return base_col, base_a
+    return tuple(int(c + (b - c) * hl) for c, b in zip(base_col, bright)), base_a + (1.0 - base_a) * hl
 
 
 class Gate:
@@ -240,6 +253,38 @@ class State:
         self.step, self.circuit, self.equiv, self.status = "", "", None, ""
         self.demo, self.done, self.flash = False, False, -99
         self.snaps, self.cur_id, self.last_good, self.restore_at = {}, None, None, None
+        self.wd_hold, self.wd_fade, self.wd_on = WINDDOWN_HOLD, WINDDOWN_FADE, True
+        self.wd_start, self.wd_k, self.wd_text, self.wd_hl = None, 1.0, "", 0.0
+
+    def configure_winddown(self, hold=WINDDOWN_HOLD, fade=WINDDOWN_FADE, enabled=True):
+        self.wd_hold, self.wd_fade, self.wd_on = max(0.0, hold), max(0.0, fade), enabled
+
+    def _end_run(self, now):
+        if self.wd_on and self.wd_start is None:
+            self.wd_start = now
+
+    def _cancel_winddown(self):
+        self.wd_start, self.wd_k, self.wd_text, self.wd_hl = None, 1.0, "", 0.0
+        self.version = getattr(self, "version", 0) + 1
+
+    def winddown_hl(self, now):
+        """0 -> 1 smoothstep over WINDDOWN_RAMP from run end; stays 1 through the fade."""
+        if self.wd_start is None:
+            return 0.0
+        u = min(1.0, max(0.0, (now - self.wd_start) / WINDDOWN_RAMP))
+        return u * u * (3 - 2 * u)
+
+    def winddown_k(self, now):
+        """Opacity multiplier for removed/failed frames: 1 during the hold, eases to 0 over the fade."""
+        if self.wd_start is None:
+            return 1.0
+        t = now - self.wd_start - self.wd_hold
+        if t <= 0:
+            return 1.0
+        if self.wd_fade <= 0 or t >= self.wd_fade:
+            return 0.0
+        u = t / self.wd_fade
+        return (1.0 - u) ** 2  # ease-out: quick start, soft landing
 
     def apply(self, ev, now):
         self.version = getattr(self, "version", 0) + 1  # lets the 3D view skip instance rebuilds
@@ -248,7 +293,10 @@ class State:
             self.demo = True
         if t == "_status":
             self.status = ev["text"]
+            if ev["text"] in ("playback finished", "stream closed") and self.gates:
+                self._end_run(now)
         elif t == "run_start":
+            self._cancel_winddown()
             self.gates.clear()
             self.snaps = {"c0": ev}
             self.cur_id = self.last_good_id = "c0"
@@ -283,6 +331,9 @@ class State:
             if ev.get("equiv") is not None:
                 self.equiv = bool(ev["equiv"])
             self.step = f"done - {ev.get('source')} - {ev.get('strategy') or ''}".strip(" -")
+            self._end_run(now)
+        elif t == "run_end":
+            self._end_run(now)
 
     def fail_circuit(self, now):
         """Every cube of the failed candidate goes static and empty; later the last passing circuit returns."""
@@ -318,7 +369,30 @@ class State:
         if changed and fresh:
             self.flash = now
 
+    def _tick_winddown(self, now):
+        if self.wd_start is None:
+            return
+        k, hl = self.winddown_k(now), self.winddown_hl(now)
+        if k != self.wd_k or hl != self.wd_hl:
+            self.wd_k, self.wd_hl = k, hl
+            self.version = getattr(self, "version", 0) + 1  # rebuild instances while fading
+        if k <= 0.0:
+            dead = [key for key, g in self.gates.items() if g.state(now) in (REMOVED, FAILED)]
+            for key in dead:
+                del self.gates[key]
+            if dead:
+                self.version = getattr(self, "version", 0) + 1
+            self.wd_text = "run complete"
+            return
+        left = self.wd_start + self.wd_hold - now
+        if any(g.failed_at is not None or g.eq_failed for g in self.gates.values()):
+            self.wd_text = (f"run complete - removed gates clear in {int(math.ceil(left))}s" if left > 0
+                            else "run complete - clearing removed gates")
+        else:
+            self.wd_text = "run complete"
+
     def tick(self, dt, now):
+        self._tick_winddown(now)
         if self.restore_at is not None and now >= self.restore_at:
             self.restore_at = None
             if self.last_good is not None:
@@ -565,6 +639,8 @@ class Renderer:
             state = g.state(now)
             d = g.dissolve(now)
             vis = g.alpha * (1 - d)
+            if state in (REMOVED, FAILED):
+                vis *= st.wd_k
             if vis <= 0.01:
                 continue
             s = 0.4 * sp * (0.6 + 0.4 * g.alpha) * (1.25 if g.name == "cx" else 1) * (1 - 0.6 * d)
@@ -577,6 +653,7 @@ class Renderer:
             p, _ = cam.project(pts, R)
             if state in (REMOVED, FAILED):
                 c, a2, _ = L.still if state == REMOVED else L.failed
+                c, a2 = highlight(c, a2, st.wd_hl, HL_REMOVED if state == REMOVED else HL_FAILED)
                 pg.draw.line(glow, (*c, int(200 * a2 * al)), p[0], p[1], 1)
             elif L.ribbon:
                 self.ribbon(glow, p[0], p[1], 1.0 if state == WORKING else 0.15, al)
@@ -604,9 +681,10 @@ class Renderer:
                     self.edges(glow, vp, L.gate_edge(g.name), vis, "solid", L.edge_glow)
                 else:  # FAILED / REMOVED: empty, static frame in the theme's 'still' style
                     color, a2, style = L.still if state == REMOVED else L.failed
+                    color, a2 = highlight(color, a2, st.wd_hl, HL_REMOVED if state == REMOVED else HL_FAILED)
                     for f in faces:
                         pg.draw.polygon(glow, (*L.still_fill, int(170 * vis * a2)), f)
-                    self.edges(glow, vp, color, vis * a2, style, 0.5)
+                    self.edges(glow, vp, color, vis * a2, style, 0.5 + 1.5 * st.wd_hl)
         self.draw_flames(glow, dt)
         screen.blit(glow, (0, 0))
         if L.panel:
@@ -675,8 +753,8 @@ def draw_overlay(screen, st, fonts, now, pg):
         if st.step:
             s = mono.render(st.step, True, WHITE)
             screen.blit(s, (sw / 2 - s.get_width() / 2, H - 56))
-        if st.status:
-            s = small.render(st.status, True, DIM)
+        if st.wd_text or st.status:
+            s = small.render(st.wd_text or st.status, True, DIM)
             screen.blit(s, (sw / 2 - s.get_width() / 2, H - 26))
         if st.circuit:
             screen.blit(sans.render(st.circuit, True, DIM), (40, 36))
@@ -698,8 +776,8 @@ def draw_overlay(screen, st, fonts, now, pg):
     if st.step:
         s = mono.render(st.step, True, WHITE)
         screen.blit(s, (W / 2 - s.get_width() / 2, H - 56))
-    if st.status:
-        s = small.render(st.status, True, DIM)
+    if st.wd_text or st.status:
+        s = small.render(st.wd_text or st.status, True, DIM)
         screen.blit(s, (W / 2 - s.get_width() / 2, H - 26))
     if st.equiv is not None:
         col = GREEN if st.equiv else RED
@@ -753,10 +831,17 @@ def main(argv=None):
     p.add_argument("--director-refresh", action="store_true", help="ask the model even if a cached theme exists")
     p.add_argument("--renderer", choices=["3d", "2d"], default="3d",
                    help="3d: cinematic GPU scene (moderngl, OpenGL 3.3 core); 2d: the original pygame renderer")
+    p.add_argument("--shape", choices=["diamond", "cube"], default="diamond",
+                   help="3d: gate frame shape (diamond = glowing octahedron frames; cube = the earlier look)")
     p.add_argument("--angle", type=float, default=0.0, help="3d: extra camera orbit angle in degrees")
     p.add_argument("--render-scale", type=float, default=0.0,
                    help="3d: internal scene resolution scale 0.25-1 (default auto: 0.5 on Retina, else 0.75)")
     p.add_argument("--stats", action="store_true", help="3d: show fps / draw calls / instance counts")
+    p.add_argument("--winddown-hold", type=float, default=WINDDOWN_HOLD, metavar="SECS",
+                   help=f"after the run ends, keep removed/failed frames fully visible this long (default {WINDDOWN_HOLD:g})")
+    p.add_argument("--winddown-fade", type=float, default=WINDDOWN_FADE, metavar="SECS",
+                   help=f"then fade them out over this long and drop them (default {WINDDOWN_FADE:g})")
+    p.add_argument("--no-winddown", action="store_true", help="keep removed/failed frames on screen forever")
     p.add_argument("--director-wait", type=float, default=0.0,
                    help="seconds to wait for the model theme before drawing (screenshots)")
     p.add_argument("--nemotron-review", action=argparse.BooleanOptionalAction, default=None,
@@ -792,6 +877,7 @@ def main(argv=None):
         th = threading.Thread(target=_feed, args=(it, q, a.speed, paused), daemon=True)
     th.start()
     st, cam, fs, clock = State(), Camera(), fonts(pg), pg.time.Clock()
+    st.configure_winddown(a.winddown_hold, a.winddown_fade, not a.no_winddown)
     t0 = time.time()
     while True:
         for e in pg.event.get():

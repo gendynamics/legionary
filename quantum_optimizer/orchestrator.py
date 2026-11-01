@@ -49,10 +49,18 @@ def main(argv=None):
     p.add_argument("--angle", type=float, default=0.0, help="viewer: 3d camera orbit angle offset (degrees)")
     p.add_argument("--render-scale", type=float, default=0.0, help="viewer: 3d internal resolution scale (0 = auto)")
     p.add_argument("--stats", action="store_true", help="viewer: show fps / draw-call stats")
+    p.add_argument("--winddown-hold", type=float, default=None, metavar="SECS",
+                   help="viewer: seconds removed/failed frames stay visible after the run (default 12)")
+    p.add_argument("--winddown-fade", type=float, default=None, metavar="SECS",
+                   help="viewer: seconds to fade them out after the hold (default 3)")
+    p.add_argument("--no-winddown", action="store_true", help="viewer: never clear removed/failed frames")
     a = p.parse_args(argv)
     vargs = ["--director-backend", a.director_backend, "--renderer", a.renderer, "--angle", str(a.angle)]
     vargs += (["--director-refresh"] if a.director_refresh else []) + (["--stats"] if a.stats else [])
     vargs += ["--render-scale", str(a.render_scale)] if a.render_scale else []
+    vargs += ["--winddown-hold", str(a.winddown_hold)] if a.winddown_hold is not None else []
+    vargs += ["--winddown-fade", str(a.winddown_fade)] if a.winddown_fade is not None else []
+    vargs += ["--no-winddown"] if a.no_winddown else []
     viewer_proc = _setup_events(a.events, a.viewer, vargs)
     lg = logging.getLogger("legionary")
     if not lg.handlers:
