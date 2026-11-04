@@ -16,7 +16,7 @@ On today's quantum hardware, every gate adds noise, so fewer gates mean better a
 
 **Planner and reviewer.** The planner proposes and the reviewer decides. The reviewer accepts only equivalent circuits and keeps the best by gates, then CX, then depth. An optional second-opinion review by NVIDIA Nemotron can flag risky rewrites, but it is advisory only. Only the math check can accept a circuit.
 
-**Cross-checked results.** The agent's 81-gate result matches what the deterministic beam search reaches on its own. Two independent runs, on Fireworks and on Nebius, landed on the same 81 gates. The test suite (69 tests) mocks every model call and checks the gate, the fallback and the search.
+**Cross-checked results.** The deterministic beam search serves as an independent verifier: run separately with no model in the loop, it confirms the agent's 81-gate answer, on top of the equivalence gate that already proved it exact. Two independent runs, on Fireworks and on Nebius, landed on the same 81 gates. The test suite (69 tests) mocks every model call and checks the gate, the fallback and the search.
 
 **Live 3D viewer.** A native, cinematic 3D scene streams the agent's run in real time: gates as glowing diamond frames, removed gates left behind as still frames, live gate, depth and CX counters, and the equivalence badge.
 
@@ -26,6 +26,8 @@ On today's quantum hardware, every gate adds noise, so fewer gates mean better a
 - **Muse Spark as the planner.** It runs through the Responses API with tool calling on the Meta Model API (`muse-spark-1.3`), and also runs on Muse Spark Open through Meta's inference partners Fireworks and Nebius. The same agent code works on all three.
 - **Muse Spark as the visual director.** At startup, Muse Spark chooses the live viewer's palette, flame color and look of removed gates from reference images. The choice is validated, cached, and backed by a built-in default.
 - **Built on Meta's open-weights ecosystem.** It is backend-portable, with automatic fallback across providers.
+
+**Meta tooling evidence.** The planner is Muse Spark driving five tools (`list_strategies`, `run_pass`, `metrics`, `check_equivalence`, `finish`) through tool calls. On the Meta Model API (`muse-spark-1.3` at api.meta.ai), the agent uses Meta's native Responses API (`responses.create` with tool definitions). On Muse Spark Open via partners, the same tools run over the OpenAI-compatible Chat Completions path: Fireworks is pinned to Chat Completions, and Nebius tries the Responses API first, then falls back to Chat Completions. The measured Grover runs below were on Muse Spark Open via Fireworks and Nebius.
 
 ## Results (measured Oct 31, 2026)
 **3-qubit Grover search, compiled to the hardware gate set**
@@ -40,6 +42,19 @@ On today's quantum hardware, every gate adds noise, so fewer gates mean better a
 - The agent finished on its own after 47 of 50 allowed tool calls.
 - The run used 45,721 input and 6,190 output tokens on Muse Spark Open via Fireworks, costing **about $0.08**.
 - A second run on Nebius reached the same 81 gates for about $0.07.
+
+### Baseline: Qiskit transpiler
+Same Grover circuit, same gate set (rz, sx, x, cx), no coupling map, counted and equivalence-checked with Legionary's own tools. Qiskit 2.6.1, `seed_transpiler=42`; level 3 also tried with seeds 0–19 (best shown).
+
+| | Gates | Depth | CX | Equivalence |
+|---|---|---|---|---|
+| Original | 157 | 99 | 24 | |
+| Qiskit `optimization_level=1` (best Qiskit result) | 93 | 55 | 24 | PASS |
+| Qiskit `optimization_level=2` | 100 | 64 | 24 | PASS |
+| Qiskit `optimization_level=3` (best of 20 seeds) | 100 | 64 | 24 | PASS |
+| **Legionary** | **81** | **55** | 24 | PASS |
+
+Legionary uses 12 fewer gates than Qiskit's best setting (81 vs 93, about 13% fewer) at the same depth and CX count.
 
 ## Demo
 The 40-second video shows a full live replay of the Grover run in the 3D viewer:
